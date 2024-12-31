@@ -5,11 +5,12 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Upload, FileText, Loader2, Copy, CheckCircle2, Terminal } from "lucide-react";
+import { Upload, FileText, Loader2, Copy, CheckCircle2, Terminal, Info } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface JsonError {
   line: number;
@@ -17,10 +18,26 @@ interface JsonError {
   position: number;
 }
 
+const SUPPORTED_FILE_TYPES = {
+  'application/pdf': '.pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+  'text/plain': '.txt',
+  'text/csv': '.csv',
+  'application/vnd.ms-excel': '.xls',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+  'image/jpeg': '.jpg,.jpeg',
+  'image/png': '.png',
+  'image/tiff': '.tiff',
+  'application/msword': '.doc',
+  'application/rtf': '.rtf',
+  'text/markdown': '.md',
+  'application/json': '.json'
+};
+
 const DocumentForm = () => {
   const [document, setDocument] = useState('');
   const [headings, setHeadings] = useState('');
-  const [jsonStructure, setJsonStructure] = useState('{\n  "type": "object",\n  "properties": {\n    "title": { "type": "string" },\n    "abstract": { "type": "string" }\n  }\n}');
+  const [jsonStructure, setJsonStructure] = useState('{\n  "type": "object",\n  "properties": {\n    "title": { "type": "string" },\n    "content": { "type": "string" }\n  }\n}');
   const [output, setOutput] = useState(null);
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -36,20 +53,21 @@ const DocumentForm = () => {
 
   const handleFileChange = (event) => {
     const uploadedFile = event.target.files?.[0] || null;
+    if (uploadedFile && uploadedFile.size > 25 * 1024 * 1024) {
+      setError('File size must be less than 25MB');
+      return;
+    }
     setFile(uploadedFile);
     setDocument('');
     setError('');
   };
 
-  const handleTextChange = (event) => {
-    setDocument(event.target.value);
-    setFile(null);
-    setError('');
-  };
-
   const validateJsonStructure = (jsonString: string) => {
     try {
-      JSON.parse(jsonString);
+      const parsed = JSON.parse(jsonString);
+      if (!parsed.type || !parsed.properties) {
+        throw new Error('JSON must include "type" and "properties" fields');
+      }
       setJsonError(null);
       setJsonValid(true);
       return true;
@@ -57,16 +75,11 @@ const DocumentForm = () => {
       const error = e as SyntaxError;
       const match = error.message.match(/at position (\d+)/);
       const position = match ? parseInt(match[1]) : 0;
-      
-      // Calculate line number and position
       const lines = jsonString.slice(0, position).split('\n');
-      const line = lines.length;
-      const positionInLine = position - jsonString.slice(0, position).lastIndexOf('\n');
-
       setJsonError({
-        line,
+        line: lines.length,
         message: error.message,
-        position: positionInLine
+        position: position - jsonString.slice(0, position).lastIndexOf('\n')
       });
       setJsonValid(false);
       return false;
@@ -90,12 +103,9 @@ const DocumentForm = () => {
       } else {
         formData.append('text', document);
       }
-
-      if (activeTab === 'headings') {
-        formData.append('headings', headings);
-      } else {
-        formData.append('jsonStructure', jsonStructure);
-      }
+      
+      formData.append(activeTab === 'headings' ? 'headings' : 'jsonStructure', 
+                     activeTab === 'headings' ? headings : jsonStructure);
       formData.append('mode', activeTab);
 
       const response = await fetch('/api/extract', {
@@ -104,35 +114,27 @@ const DocumentForm = () => {
       });
 
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || 'Something went wrong');
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Something went wrong');
       }
 
-      const data = await response.json();
-      setOutput(data);
+      setOutput(await response.json());
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'An unexpected error occurred';
-      setError(errorMessage);
+      setError(err instanceof Error ? err.message : 'An unexpected error occurred');
     } finally {
       setLoading(false);
     }
   };
 
   const handleCopy = async (type: 'output' | 'json') => {
-    const text = type === 'output' 
-      ? JSON.stringify(output, null, 2)
-      : jsonStructure;
-    
+    const text = type === 'output' ? JSON.stringify(output, null, 2) : jsonStructure;
     await navigator.clipboard.writeText(text);
     setCopied(prev => ({ ...prev, [type]: true }));
-    setTimeout(() => {
-      setCopied(prev => ({ ...prev, [type]: false }));
-    }, 2000);
+    setTimeout(() => setCopied(prev => ({ ...prev, [type]: false })), 2000);
   };
 
   const syntaxHighlight = (json: string) => {
     if (!json) return '';
-    
     json = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     
     return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?|[{}\[\],])/g, 
@@ -140,29 +142,15 @@ const DocumentForm = () => {
         if (/^[{}\[\],]$/.test(match)) {
           return `<span class="text-white">${match}</span>`;
         }
-        
-        let cls = 'text-emerald-400'; // number
-        if (/^"/.test(match)) {
-          if (/:$/.test(match)) {
-            cls = 'text-pink-400'; // key
-          } else {
-            cls = 'text-amber-400'; // string
-          }
-        } else if (/true|false/.test(match)) {
-          cls = 'text-purple-400'; // boolean
-        } else if (/null/.test(match)) {
-          cls = 'text-gray-400'; // null
-        }
+        const cls = /^"/.test(match) 
+          ? (/:$/.test(match) ? 'text-pink-400' : 'text-amber-400')
+          : /true|false/.test(match) 
+            ? 'text-purple-400' 
+            : /null/.test(match)
+              ? 'text-gray-400'
+              : 'text-emerald-400';
         return `<span class="${cls}">${match}</span>`;
       });
-  };
-
-  const isSubmitDisabled = () => {
-    if (loading) return true;
-    if (!document && !file) return true;
-    if (activeTab === 'headings' && !headings) return true;
-    if (activeTab === 'json' && (!jsonStructure || !jsonValid)) return true;
-    return false;
   };
 
   return (
@@ -183,15 +171,27 @@ const DocumentForm = () => {
         <form onSubmit={handleSubmit} className="space-y-6">
           <div className="space-y-4">
             <div className="bg-white p-4 rounded-lg border shadow-sm">
-              <Label htmlFor="file" className="flex items-center gap-2 text-sm font-medium">
-                <Upload className="h-4 w-4" />
-                Upload File (PDF or DOCX)
-              </Label>
+              <div className="flex items-center gap-2">
+                <Label htmlFor="file" className="flex items-center gap-2 text-sm font-medium">
+                  <Upload className="h-4 w-4" />
+                  Upload File
+                </Label>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger>
+                      <Info className="h-4 w-4 text-zinc-400" />
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      <p>Supports PDF, DOCX, TXT, CSV, XLS, XLSX, Images (JPG, PNG, TIFF), DOC, RTF, MD, JSON</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
               <div className="mt-2">
                 <Input
                   id="file"
                   type="file"
-                  accept=".pdf,.docx"
+                  accept={Object.values(SUPPORTED_FILE_TYPES).join(',')}
                   onChange={handleFileChange}
                   className="cursor-pointer file:bg-zinc-100 file:text-zinc-700 file:border-0 file:rounded"
                 />
@@ -206,7 +206,11 @@ const DocumentForm = () => {
               <Textarea
                 id="text"
                 value={document}
-                onChange={handleTextChange}
+                onChange={(e) => {
+                  setDocument(e.target.value);
+                  setFile(null);
+                  setError('');
+                }}
                 disabled={!!file}
                 className="mt-2 min-h-[150px] font-mono text-sm"
                 placeholder="Paste your document or paragraph here"
@@ -228,7 +232,6 @@ const DocumentForm = () => {
                   <Label htmlFor="headings">Headings (comma-separated)</Label>
                   <Input
                     id="headings"
-                    type="text"
                     value={headings}
                     onChange={(e) => setHeadings(e.target.value)}
                     className="mt-2 font-mono"
@@ -240,8 +243,8 @@ const DocumentForm = () => {
               <TabsContent value="json" className="mt-4">
                 <div className="bg-white p-4 rounded-lg border shadow-sm space-y-2">
                   <div className="flex items-center justify-between">
-                    <Label htmlFor="json" className="flex items-center gap-2">
-                      Custom JSON Structure
+                    <div className="flex items-center gap-2">
+                      <Label htmlFor="json">Custom JSON Structure</Label>
                       {jsonValid ? (
                         <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200">
                           Valid JSON
@@ -251,12 +254,11 @@ const DocumentForm = () => {
                           Invalid JSON
                         </Badge>
                       )}
-                    </Label>
+                    </div>
                     <Button
                       type="button"
                       variant="outline"
                       size="sm"
-                      className="h-8"
                       onClick={() => handleCopy('json')}
                     >
                       {copied.json ? (
@@ -286,7 +288,7 @@ const DocumentForm = () => {
           </div>
 
           {error && (
-            <Alert variant="destructive" className="mt-4">
+            <Alert variant="destructive">
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           )}
@@ -294,7 +296,7 @@ const DocumentForm = () => {
           <Button
             type="submit"
             className="w-full bg-zinc-900 hover:bg-zinc-800"
-            disabled={isSubmitDisabled()}
+            disabled={loading || (!document && !file) || (activeTab === 'headings' ? !headings : !jsonValid)}
           >
             {loading ? (
               <>
