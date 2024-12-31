@@ -28,7 +28,7 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
       {/* Footer */}
       <footer className="bg-secondary text-secondary-foreground py-4">
         <div className="text-center text-sm">
-          &copy; {new Date().getFullYear()} React Ollama Project. All Rights Reserved.
+          &copy; {new Date().getFullYear()} React Ollama Project By Shivam Pokharkar. All Rights Reserved.
         </div>
       </footer>
     </div>
